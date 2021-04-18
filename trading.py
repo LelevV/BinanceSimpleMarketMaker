@@ -2,7 +2,6 @@ from account import get_binance_client, get_trading_info
 from staticPingPong import StaticPingPong
 from binance.client import Client
 import matplotlib.pyplot as plt
-from ta.momentum import RSIIndicator
 import pandas as pd
 
 if __name__ == '__main__':

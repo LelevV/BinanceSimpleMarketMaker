@@ -4,6 +4,7 @@ import pandas as pd
 import time
 import datetime
 from order_functions import buy_limit_order, sell_limit_order, is_order_filled, cancel_order
+from data import get_historic_klines
 
 
 class StaticPingPong(object):
@@ -108,8 +109,8 @@ class StaticPingPong(object):
         """
         fees = pd.DataFrame(self.client.get_trade_fee()['tradeFee'])
         self.symbol_fee = fees[fees['symbol'] == self.main_pair]
+        assert float(self.symbol_fee['maker']) == 0, 'fee is not zero!'
 
-        # TODO:implement assert to ensure that fees are zero
         symbol_info = self.client.get_symbol_info(self.main_pair)
         filters = pd.DataFrame(symbol_info['filters'])
         self.min_notional = float(filters[filters['filterType'] == 'MIN_NOTIONAL']['minNotional'])
@@ -131,8 +132,16 @@ class StaticPingPong(object):
         Calculate and set new orders parameters
         """
 
-        self.sell_price = 0.9985
-        self.buy_price = 0.9984
+        start_date = "1 day ago UTC"
+        kline_interval = Client.KLINE_INTERVAL_1MINUTE
+        candles = get_historic_klines(self.client,
+                                      kline_interval,
+                                      self.main_pair,
+                                      start_date)
+
+        price = candles['Close'].iloc[-100:].median()
+        self.sell_price = round(price, self.ticksize) + 0.0001
+        self.buy_price = round(price, self.ticksize)
 
         balance = pd.DataFrame(self.client.get_account()['balances'])
         self.base_balance = float(balance[balance['asset'] == self.main_pair_base]['free'])
@@ -203,7 +212,7 @@ class StaticPingPong(object):
                 # 1) set last buy price
                 self.last_buy_price = self.buy_price
                 # 2) set new main sell limit order
-                self.bot_limit_sell_order()
+                self.bot_limit_sell_order(update_order_parameters=False)
 
     def start_trading_session(self):
         self.general_test_bot()
