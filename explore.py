@@ -13,7 +13,7 @@ trading_info = get_trading_info(client, symbol, 'BUSD', 'USDT')
 for key, value in trading_info.items():
     print(key, value)
 
-start_date = '2021-01-01'
+start_date = '1 day ago UTC' #'2021-04-01'
 candles = get_historic_klines(client, kline_interval, symbol, start_date)
 rsi_window = 10
 rsi_col_name = f'RSI{str(rsi_window)}'
@@ -61,11 +61,12 @@ for index, row in df.iterrows():
         net_capital += profit - (0.0001 + (row['Close'] - in_position_price) * 0.001)
 
     # static limits
-    static_buy = row['rollingMedian'] #- 0.0001
-    static_sell = row['rollingMedian'] + 0.0001
+    if not in_position_static:
+        static_buy = row['rollingMedian'] #- 0.0001
+        static_sell = row['rollingMedian'] + 0.0001
     # static_buy = 0.9984
     # static_sell = 0.9985
-    # print('Close', row['Close'], ' - buy:', static_buy, ' - sell:', static_sell)
+    print(row['OpenTimeCEST'], 'Close', row['Close'], ' - buy:', static_buy, ' - sell:', static_sell)
     if row['Close'] <= static_buy and not in_position_static:
         in_position_static = True
         in_position_price_static = row['Close']

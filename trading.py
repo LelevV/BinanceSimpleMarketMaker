@@ -21,7 +21,9 @@ if __name__ == '__main__':
 
     pingpong = StaticPingPong(client)
     pingpong.set_trading_parameters(UPDATE_INTERVAL,
-                                    N_ITERATIONS)
+                                    N_ITERATIONS,
+                                    max_order_quantity=True,
+                                    update_buy_if_not_filled_after=10)
 
     pingpong.set_symbols(PAIR_SYMBOL,
                          BASE_SYMBOL,

@@ -90,9 +90,13 @@ class StaticPingPong(object):
 
     def set_trading_parameters(self,
                                update_interval,
-                               n_iterations):
+                               n_iterations,
+                               max_order_quantity=False,
+                               update_buy_if_not_filled_after=100):
         self.update_interval = update_interval
         self.n_iterations = n_iterations
+        self.max_order_quantity = max_order_quantity
+        self.update_buy_if_not_filled_after = update_buy_if_not_filled_after
 
     def set_symbols(self,
                     main_pair,
@@ -127,30 +131,38 @@ class StaticPingPong(object):
         self.base_balance = float(balance[balance['asset'] == self.main_pair_base]['free'])
         self.quote_balance = float(balance[balance['asset'] == self.main_pair_quote]['free'])
 
-    def set_order_parameters(self):
+    def set_order_parameters(self, update_order_price=True):
         """
         Calculate and set new orders parameters
         """
+        # skip price update if update_only_order_quantity == True
+        if update_order_price:
+            start_date = "1 day ago UTC"
+            kline_interval = Client.KLINE_INTERVAL_1MINUTE
+            candles = get_historic_klines(self.client,
+                                          kline_interval,
+                                          self.main_pair,
+                                          start_date)
 
-        start_date = "1 day ago UTC"
-        kline_interval = Client.KLINE_INTERVAL_1MINUTE
-        candles = get_historic_klines(self.client,
-                                      kline_interval,
-                                      self.main_pair,
-                                      start_date)
-
-        price = candles['Close'].iloc[-100:].median()
-        self.sell_price = round(price, self.ticksize) + 0.0001
-        self.buy_price = round(price, self.ticksize)
+            price = candles['Close'].iloc[-100:].median()
+            self.sell_price = round(price, self.ticksize) + 0.0001
+            self.buy_price = round(price, self.ticksize)
 
         balance = pd.DataFrame(self.client.get_account()['balances'])
         self.base_balance = float(balance[balance['asset'] == self.main_pair_base]['free'])
         self.quote_balance = float(balance[balance['asset'] == self.main_pair_quote]['free'])
 
-        self.sell_volume = round(self.min_notional / self.sell_price + self.stepsize,
-                                 self.stepsize_index)
-        self.buy_volume = round(self.min_notional / self.buy_price + self.stepsize,
-                                self.stepsize_index)
+        # determine if to use min or max order quantity
+        if self.max_order_quantity:
+            self.sell_volume = round((self.base_balance * 0.95) / self.sell_price,
+                                     self.stepsize_index)
+            self.buy_volume = round((self.quote_balance * 0.95) / self.buy_price,
+                                    self.stepsize_index)
+        else:
+            self.sell_volume = round(self.min_notional / self.sell_price + self.stepsize,
+                                     self.stepsize_index)
+            self.buy_volume = round(self.min_notional / self.buy_price + self.stepsize,
+                                    self.stepsize_index)
 
     def get_current_price(self, symbol):
         return float(pd.DataFrame(self.client.get_all_tickers())
@@ -166,9 +178,8 @@ class StaticPingPong(object):
             elif self.current_order_side == 'SELL':
                 self.main_in_position = False
 
-    def bot_limit_buy_order(self, update_order_parameters=True):
-        if update_order_parameters:
-            self.set_order_parameters()
+    def bot_limit_buy_order(self):
+        self.set_order_parameters()
         self.order_test_bot()
         self.print_order_info()
         print('Placing limit buy order...')
@@ -181,10 +192,9 @@ class StaticPingPong(object):
         self.current_order_side = 'BUY'
         self.main_orders.append(order_id)
 
-    def bot_limit_sell_order(self, update_order_parameters=True):
+    def bot_limit_sell_order(self):
         self.order_test_bot()
-        if update_order_parameters:
-            self.set_order_parameters()
+        self.set_order_parameters(update_order_price=False)
         self.print_order_info()
         print('Placing limit sell order...')
         order_id = sell_limit_order(self.client,
@@ -207,16 +217,32 @@ class StaticPingPong(object):
                 # 1) set new main buy limit order
                 self.bot_limit_buy_order()
         elif self.current_order_side == 'BUY':
+            # update counter for buy order
+            self.n_rounds_buy_not_filled += 1
             # if main buy was filled
             if is_order_filled(self.client, self.main_pair, self.current_order_id):
                 # 1) set last buy price
                 self.last_buy_price = self.buy_price
                 # 2) set new main sell limit order
-                self.bot_limit_sell_order(update_order_parameters=False)
+                self.bot_limit_sell_order()
+                # 3) set counter to zero
+                self.n_rounds_buy_not_filled = 0
+            # if buy was not filled after given rounds; cancel order and update
+            elif self.n_rounds_buy_not_filled >= self.update_buy_if_not_filled_after:
+                # set counter to zero
+                self.n_rounds_buy_not_filled = 0
+                try:
+                    # 1) cancel current buy limit
+                    cancel_order(self.client, self.main_pair, self.current_order_id)
+                    # 2) set new main buy limit
+                    self.bot_limit_buy_order()
+                except Exception as e:
+                    print('Error occured during order cancel:', e)
 
     def start_trading_session(self):
         self.general_test_bot()
         self.set_trading_info()
+        self.n_rounds_buy_not_filled = 0
         self.main_orders = []
         self.current_order_id = None
         self.current_order_side = None
@@ -232,7 +258,8 @@ class StaticPingPong(object):
             except Exception as e:
                 print('Error during trading cycle occured:', e)
             print(f'Main in position: {self.main_in_position}')
+            if not self.main_in_position:
+                print(f'{self.n_rounds_buy_not_filled} of max {self.update_buy_if_not_filled_after} rounds not filled.')
             print(f'Cycle is Done, wait for {self.update_interval} seconds.')
             time.sleep(self.update_interval)
-
         print('--- FINISHED ---')
