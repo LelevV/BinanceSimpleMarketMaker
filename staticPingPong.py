@@ -28,22 +28,24 @@ class StaticPingPong(object):
         assert float(self.update_interval)
         assert float(self.n_iterations)
 
-    def order_test_bot(self):
+    def order_test_bot(self, side):
         """
         Place list of assertions to check before order.
         """
-        assert self.sell_volume >= self.min_quantity, \
-            f'Not meeting min quantity for sell: {self.min_quantity}'
-        assert self.buy_volume >= self.min_quantity, \
-            f'Not meeting min quantity for buy: {self.min_quantity}'
-        assert self.sell_volume * self.sell_price >= self.min_notional, \
-            f'Not meeting min notional for sell: {self.min_notional}'
-        assert self.buy_volume * self.buy_price >= self.min_notional, \
-            f'Not meeting min notional for buy: {self.min_notional}'
-        assert self.buy_volume >= self.min_quantity, \
-            f'Not meeting min qty for buy: {self.buy_volume}'
-        assert self.sell_volume >= self.min_quantity, \
-            f'Not meeting min qty for sell: {self.sell_volume}'
+        if side == 'BUY':
+            assert self.buy_volume >= self.min_quantity, \
+                f'Not meeting min quantity for buy: {self.min_quantity}'
+            assert self.buy_volume * self.buy_price >= self.min_notional, \
+                f'Not meeting min notional for buy: {self.min_notional}'
+            assert self.buy_volume >= self.min_quantity, \
+                f'Not meeting min qty for buy: {self.buy_volume}'
+        elif side == 'SELL':
+            assert self.sell_volume >= self.min_quantity, \
+                f'Not meeting min quantity for sell: {self.min_quantity}'
+            assert self.sell_volume * self.sell_price >= self.min_notional, \
+                f'Not meeting min notional for sell: {self.min_notional}'
+            assert self.sell_volume >= self.min_quantity, \
+                f'Not meeting min qty for sell: {self.sell_volume}'
 
     def print_trading_info(self):
         """
@@ -131,21 +133,25 @@ class StaticPingPong(object):
         self.base_balance = float(balance[balance['asset'] == self.main_pair_base]['free'])
         self.quote_balance = float(balance[balance['asset'] == self.main_pair_quote]['free'])
 
+    def get_median_kline_price(self, start_date="1 day ago UTC"):
+        kline_interval = Client.KLINE_INTERVAL_1MINUTE
+        candles = get_historic_klines(self.client,
+                                      kline_interval,
+                                      self.main_pair,
+                                      start_date)
+
+        median_window = 100
+        price = candles['Close'].iloc[-median_window:].median()
+        return round(price, self.ticksize)
+
     def set_order_parameters(self, update_order_price=True):
         """
         Calculate and set new orders parameters
         """
         # skip price update if update_only_order_quantity == True
         if update_order_price:
-            start_date = "1 day ago UTC"
-            kline_interval = Client.KLINE_INTERVAL_1MINUTE
-            candles = get_historic_klines(self.client,
-                                          kline_interval,
-                                          self.main_pair,
-                                          start_date)
-
-            price = candles['Close'].iloc[-100:].median()
-            self.sell_price = round(price, self.ticksize) + 0.0001
+            price = self.get_median_kline_price()
+            self.sell_price = round(round(price, self.ticksize) + 0.0001, self.ticksize)
             self.buy_price = round(price, self.ticksize)
 
         balance = pd.DataFrame(self.client.get_account()['balances'])
@@ -170,6 +176,7 @@ class StaticPingPong(object):
                      ['price'])
 
     def set_in_position(self):
+        print('Set in position before:', self.main_in_position)
         if len(self.main_orders) == 0:
             self.main_in_position = False
         elif is_order_filled(self.client, self.main_pair, self.current_order_id):
@@ -177,10 +184,11 @@ class StaticPingPong(object):
                 self.main_in_position = True
             elif self.current_order_side == 'SELL':
                 self.main_in_position = False
+        print('Set in position after:', self.main_in_position)
 
     def bot_limit_buy_order(self):
         self.set_order_parameters()
-        self.order_test_bot()
+        self.order_test_bot('BUY')
         self.print_order_info()
         print('Placing limit buy order...')
         order_id = buy_limit_order(self.client,
@@ -193,8 +201,8 @@ class StaticPingPong(object):
         self.main_orders.append(order_id)
 
     def bot_limit_sell_order(self):
-        self.order_test_bot()
         self.set_order_parameters(update_order_price=False)
+        self.order_test_bot('SELL')
         self.print_order_info()
         print('Placing limit sell order...')
         order_id = sell_limit_order(self.client,
@@ -219,8 +227,11 @@ class StaticPingPong(object):
         elif self.current_order_side == 'BUY':
             # update counter for buy order
             self.n_rounds_buy_not_filled += 1
+            # if buy was canceld, order_id is None --> place new order
+            if not self.current_order_id:
+                self.bot_limit_buy_order()
             # if main buy was filled
-            if is_order_filled(self.client, self.main_pair, self.current_order_id):
+            elif is_order_filled(self.client, self.main_pair, self.current_order_id):
                 # 1) set last buy price
                 self.last_buy_price = self.buy_price
                 # 2) set new main sell limit order
@@ -231,13 +242,16 @@ class StaticPingPong(object):
             elif self.n_rounds_buy_not_filled >= self.update_buy_if_not_filled_after:
                 # set counter to zero
                 self.n_rounds_buy_not_filled = 0
-                try:
-                    # 1) cancel current buy limit
-                    cancel_order(self.client, self.main_pair, self.current_order_id)
-                    # 2) set new main buy limit
-                    self.bot_limit_buy_order()
-                except Exception as e:
-                    print('Error occured during order cancel:', e)
+                median_price = self.get_median_kline_price()
+                if median_price != self.buy_price:
+                    try:
+                        # 1) cancel current buy limit
+                        cancel_order(self.client, self.main_pair, self.current_order_id)
+                        self.current_order_id = None
+                    except Exception as e:
+                        print('Error occured during order cancel:', e)
+                else:
+                    print('Price is still the same:', self.buy_price)
 
     def start_trading_session(self):
         self.general_test_bot()

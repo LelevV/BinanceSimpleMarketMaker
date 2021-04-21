@@ -36,7 +36,7 @@ rsi_sell_signal = 60
 df = (candles
       .assign(buySignal=lambda x: x[rsi_col_name] <= rsi_buy_signal,
               sellSignal=lambda x: x[rsi_col_name] >= rsi_sell_signal,
-              rollingMedian=lambda x: x['Close'].rolling(100).median()))
+              rollingMedian=lambda x: x['Close'].rolling(80).median()))
 
 gross_capital = 0
 net_capital = 0
@@ -67,10 +67,10 @@ for index, row in df.iterrows():
     # static_buy = 0.9984
     # static_sell = 0.9985
     print(row['OpenTimeCEST'], 'Close', row['Close'], ' - buy:', static_buy, ' - sell:', static_sell)
-    if row['Close'] <= static_buy and not in_position_static:
+    if row['Close'] - 0.0001 <= static_buy and not in_position_static:# and row[rsi_col_name] < 60:
         in_position_static = True
         in_position_price_static = row['Close']
-    elif in_position_static and row['Close'] >= static_sell:
+    elif in_position_static and row['Close'] + 0.0001 >= static_sell:
         in_position_static = False
         profit = (row['Close'] - in_position_price_static)
         static_capital += profit
